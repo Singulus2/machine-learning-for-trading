@@ -144,15 +144,27 @@ Desktop can start, so complete steps 1-3 in order and do not skip the restart.
    empty, repeat step 1 and confirm you restarted. If `VERSION` reads `1`, run
    `wsl --set-version Ubuntu 2`.
 
-4. **Increase WSL2 memory limit**: WSL2 defaults to 50% of host RAM, which may not be enough for data-heavy notebooks. Create or edit `%USERPROFILE%\.wslconfig`:
+4. **Increase WSL2 memory limit** *(optional — skip unless a notebook runs out of memory; most
+   chapters are fine on the default)*: WSL2 defaults to 50% of host RAM, which may not be enough for
+   data-heavy notebooks. The `%USERPROFILE%\.wslconfig` file lives in your **Windows** home folder, so
+   create it from **Windows** PowerShell (a regular window, not admin), not from inside Ubuntu. Paste
+   this one line to create it with the recommended settings:
+   ```powershell
+   Set-Content -Path "$env:USERPROFILE\.wslconfig" -Value "[wsl2]`nmemory=12GB`nswap=4GB"
+   ```
+   That writes:
    ```ini
    [wsl2]
    memory=12GB
    swap=4GB
    ```
-   Then restart WSL: `wsl --shutdown` from PowerShell, then reopen your terminal.
+   Then apply it by restarting WSL: `wsl --shutdown` from PowerShell, then reopen your terminal.
 
-5. **Install Docker Desktop** from [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/)
+5. **Install Docker Desktop.** This is a **Windows program you download in your web browser** — not
+   a command you type into a terminal. Open [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/)
+   in Edge or Chrome, click **Download for Windows**, and run the downloaded `Docker Desktop
+   Installer.exe`. Do **not** type `docker.com/...` into PowerShell or the Ubuntu terminal — that
+   address is a web link, not a command.
 
    Install it only after `wsl --list --verbose` shows a `VERSION 2` distribution. Docker Desktop
    started against a non-working WSL2 backend hangs on "Starting the Docker Engine…" indefinitely.
