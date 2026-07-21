@@ -14,6 +14,35 @@
 # ---
 
 # %% [markdown]
+# ## Imports
+
+# %%
+"""Factor-Based Regime Detection — unsupervised regime detection using GMM on AQR factor returns."""
+
+from __future__ import annotations
+
+import warnings
+from collections.abc import Iterable
+from dataclasses import dataclass
+
+warnings.filterwarnings("ignore")
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import polars as pl
+from matplotlib.axes import Axes
+from matplotlib.colors import ListedColormap
+from ml4t.data.providers import AQRFactorProvider
+from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score
+from sklearn.mixture import GaussianMixture
+from sklearn.preprocessing import StandardScaler
+
+from utils.paths import get_output_dir
+from utils.reproducibility import set_global_seeds
+
+# %% [markdown]
 # # Factor-Based Regime Detection
 #
 # **Chapter 1 · §1.4 Market Regimes: Change Is the Constant**
@@ -64,35 +93,6 @@
 # information sets, embargoed cross-validation) is introduced from Chapter 6 onward, and
 # the case-study chapters (Ch16-20) demonstrate how predictive regime features are
 # constructed and evaluated.
-
-# %% [markdown]
-# ## Imports
-
-# %%
-"""Factor-Based Regime Detection — unsupervised regime detection using GMM on AQR factor returns."""
-
-from __future__ import annotations
-
-import warnings
-from collections.abc import Iterable
-from dataclasses import dataclass
-
-warnings.filterwarnings("ignore")
-
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
-import polars as pl
-from matplotlib.axes import Axes
-from matplotlib.colors import ListedColormap
-from ml4t.data.providers import AQRFactorProvider
-from sklearn.cluster import KMeans
-from sklearn.metrics import silhouette_score
-from sklearn.mixture import GaussianMixture
-from sklearn.preprocessing import StandardScaler
-
-from utils.paths import get_output_dir
-from utils.reproducibility import set_global_seeds
 
 # %% tags=["parameters"]
 # Production defaults (Papermill overrides for testing)
@@ -1035,3 +1035,5 @@ duration_df.style.format({"Avg duration (months)": "{:.1f}"})
 # **Next**: `macro_regimes.py` switches from style returns to macro indicators (UNRATE,
 # DFF, T10Y2Y, CPIAUCSL) and validates the resulting clusters against S&P 500 volatility
 # and drawdowns. See Chapter 1 §1.4 for the workflow context.
+
+# %%
