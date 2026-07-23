@@ -314,6 +314,62 @@ macro_monthly = (
 Anschließend wird auf **ab 2002** gefiltert, weil dort die meisten FRED-Reihen
 gute Abdeckung haben.
 
+### Exkurs: Was ist Resampling?
+
+**Resampling** heißt, eine Zeitreihe von **einer zeitlichen Frequenz in eine
+andere** zu überführen — die Datenpunkte werden auf ein **neues Zeitraster**
+umgerechnet. Genau das tut `group_by_dynamic` hier: aus (teils täglichen,
+wöchentlichen) FRED-Reihen werden **Monatswerte**.
+
+Zwei Richtungen:
+
+| Richtung | Was passiert | Beispiel |
+|----------|--------------|----------|
+| **Downsampling** | fein → grob; mehrere Werte werden **aggregiert** | täglich → monatlich (viele Tage → ein Wert) |
+| **Upsampling** | grob → fein; es entstehen **Lücken**, die gefüllt werden | monatlich → täglich (fehlende Tage füllen/interpolieren) |
+
+Das Notebook macht **Downsampling** (fein → monatlich). Der entscheidende Punkt
+dabei: Man muss eine **Aggregationsregel** wählen — es gibt nicht *die eine*
+richtige:
+
+- **`last()`** — letzter Wert der Periode; passt zu **Bestandsgrößen** wie
+  Zinsen, Preisen, Arbeitslosenquote → **das nutzt das Notebook**.
+- **`mean()`** — Periodendurchschnitt (glättet stärker).
+- **`sum()`** — Summe; sinnvoll für **Flussgrößen** (Volumen, Umsätze).
+- **`first()` / `min()` / `max()`** — je nach Zweck.
+
+**Zuordnung zum Code:**
+
+| Baustein | Bedeutung |
+|----------|-----------|
+| `every="1mo"` | neues Raster = **Monatsfenster** |
+| `label="right"` | jedes Fenster wird auf sein **Monatsende** datiert (`label="left"` wäre der Monatsanfang) |
+| `.agg(pl.col(c).last())` | Aggregationsregel: pro Monat der **letzte** Wert |
+
+Dasselbe passiert später für den S&P 500 in pandas-Syntax:
+`sp500_raw["close"].resample("ME").last()` (`"ME"` = *month end*).
+
+**Warum überhaupt resampeln?**
+
+1. **Frequenzen angleichen:** Die FRED-Reihen kommen in **gemischten Frequenzen**
+   (Arbeitslosenquote monatlich, Fed Funds Rate/VIX täglich …). Fürs gemeinsame
+   Clustering braucht man **ein einheitliches Raster** — hier Monatsende.
+2. **Signal passend zur Fragestellung machen:** Makro-Regime bewegen sich über
+   Monate, nicht über Tage — Tagesrauschen wäre kontraproduktiv.
+3. **Alignment:** Erst auf gemeinsamer Frequenz lassen sich die Reihen
+   zusammenführen und mit dem S&P 500 abgleichen (Abschnitt 10,
+   `reindex(..., method="nearest")`).
+
+**Die Resampling-Falle (relevant fürs Trading):** Der `last()`-Wert gilt am
+**Monatsende**, aber Makrodaten werden oft **verzögert veröffentlicht** (der
+„Januar-Wert" der Arbeitslosenquote ist real erst Anfang Februar bekannt). Genau
+deshalb der Hinweis oben zum **Backward-Fill**: Er kann Information aus der
+Zukunft ans Monatsende ziehen → **Look-ahead-Bias**. Für ein deskriptives Demo
+akzeptabel, für einen Backtest nicht.
+
+Merksatz: **Resampling = dieselbe Zeitreihe auf ein neues Zeitraster bringen —
+beim Vergröbern musst du aggregieren (wie?), beim Verfeinern auffüllen (womit?).**
+
 ---
 
 ## 7. Standardisieren fürs Clustering — und CPI → YoY
@@ -365,6 +421,57 @@ Der **Silhouette-Score** (`> 0.25` = brauchbare Struktur) misst die
 Cluster-Trennung. Der bewusste **Verzicht auf BIC/AIC** hier ist im Notebook
 begründet: Ziel ist das Wiedererkennen bekannter Wirtschaftsphasen, nicht die
 statistisch optimale Cluster-Anzahl.
+
+### Exkurs: Was misst der Silhouette-Score?
+
+Der **Silhouette-Score** (`silhouette_score(...)`, taucht im Notebook mehrfach
+auf) misst, **wie gut ein Clustering ist** — konkret, wie **klar getrennt** und
+**in sich kompakt** die Cluster sind. Er ist ein rein **geometrisches** Gütemaß
+(nur Distanzen) und **modellunabhängig** — egal, ob GMM oder K-Means die Cluster
+erzeugt hat.
+
+**Idee — zwei Distanzen pro Punkt** (hier: pro Monat):
+
+- **a** = mittlere Distanz zu den Punkten im **eigenen** Cluster → **Kompaktheit**
+- **b** = mittlere Distanz zum **nächstgelegenen fremden** Cluster → **Trennung**
+
+Daraus der Wert je Punkt; der Gesamt-Score ist der **Durchschnitt** über alle
+Punkte:
+
+```text
+s = (b − a) / max(a, b)
+```
+
+**Interpretation** (Bereich **−1 bis +1**, **höher = besser**):
+
+| Wert | Bedeutung |
+|------|-----------|
+| nahe **+1** | viel näher am eigenen als am fremden Cluster → gut getrennt, dicht |
+| nahe **0** | auf der Grenze zweier Cluster → Cluster überlappen |
+| **negativ** | näher an einem fremden Cluster → wahrscheinlich falsch zugeordnet |
+
+Grobe (selbst heuristische) Faustregeln: **> 0,5** deutlich, **0,25–0,5**
+brauchbar (die Schwelle im Notebook), **nahe 0** schwach, **negativ** daneben.
+
+**Wozu im Notebook:** Der Score ist das **Vergleichskriterium** zwischen den
+Ansätzen — Core ~0,25, Extended ~0,42, GMM vs. K-Means 0,42 vs. 0,45 (Abschnitt
+17, Key Takeaways).
+
+**Einschränkungen:**
+
+1. **Undefiniert bei einem Cluster** (`n < 2`) → `NaN`.
+2. **Für ein GMM nur ein Zusatz-Check:** Die Silhouette kennt das
+   GMM-Wahrscheinlichkeitsmodell nicht; die eigentlich passenden Kriterien wären
+   **BIC/AIC** (siehe Abschnitt 9 in [`factor_regimes.md`](factor_regimes.md)) —
+   die hier aber bewusst zugunsten der Interpretierbarkeit weggelassen werden.
+3. **Bevorzugt kugelförmige, gleich große Cluster** — sie „bestraft" tendenziell
+   die beliebig geformten Ellipsen, die `covariance_type="full"` gerade zulässt.
+   Ein GMM kann also inhaltlich gut sein und trotzdem eine mäßige Silhouette
+   haben.
+
+Merksatz: **Silhouette = „passt jeder Punkt besser zu seinem eigenen als zum
+nächsten fremden Cluster?" — gemittelt über alle Punkte, von −1 (falsch) über 0
+(Grenzfall) bis +1 (sauber getrennt).**
 
 ---
 
