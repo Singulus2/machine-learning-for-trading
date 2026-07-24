@@ -198,6 +198,35 @@ RUN mkdir -p /etc/jupyter && \
 RUN mkdir -p /etc/jupyter/labconfig && \
     echo '{"disabledExtensions": {"catboost-widget": true}}' > /etc/jupyter/labconfig/page_config.json
 
+# Plotly static image export (fig.write_image, and nbconvert/papermill runs that
+# render figures) goes through Kaleido. Kaleido v1+ no longer bundles a browser —
+# it needs a real Chrome plus its shared libraries, neither of which is in this
+# minimal ubuntu:24.04 base. Without them every export dies with ChromeNotFoundError
+# (missing browser) or BrowserFailedError (browser starts, then exits on a missing
+# .so). Install the runtime libs Chrome links against, then pre-download Chrome to a
+# fixed, world-readable path. BROWSER_PATH points Kaleido straight at it, so the
+# export works regardless of the UID/HOME that docker-compose.yml injects at runtime
+# (choreographer's own lookup is HOME-based and would miss a build-time download).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libglib2.0-0t64 libnspr4 libnss3 libdbus-1-3 \
+      libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 \
+      libxcb1 libxkbcommon0 libatspi2.0-0t64 libx11-6 \
+      libxcomposite1 libxdamage1 libxext6 libxfixes3 libxrandr2 \
+      libgbm1 libcairo2 libpango-1.0-0 libasound2t64 \
+    && rm -rf /var/lib/apt/lists/*
+# amd64: Chrome-for-Testing ships a linux64 build — mandatory, fail the build if it
+# can't be fetched. arm64 (Apple Silicon): no linux-arm64 Chrome-for-Testing build
+# exists, so this is best-effort; the export just stays unavailable there, matching
+# how the arm64 image already drops signatory/esig. BROWSER_PATH is set regardless —
+# it's harmless when the binary is absent (Kaleido fails the same way it would anyway).
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+      /opt/ml4t/bin/kaleido_get_chrome --path /opt/chrome && chmod -R a+rX /opt/chrome \
+        || echo "WARNING: Chrome unavailable on arm64 — Plotly static image export disabled"; \
+    else \
+      /opt/ml4t/bin/kaleido_get_chrome --path /opt/chrome && chmod -R a+rX /opt/chrome; \
+    fi
+ENV BROWSER_PATH=/opt/chrome/chrome-linux64/chrome
+
 # Test infrastructure — pytest + helpers so CI doesn't need runtime pip install
 RUN /opt/ml4t/bin/pip install --no-cache-dir \
     "pytest>=8.0" "pytest-timeout>=2.3"
