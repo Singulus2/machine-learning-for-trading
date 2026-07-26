@@ -102,6 +102,62 @@ splits = aapl.filter(pl.col("split_ratio") != 1.0)
 splits.select(["timestamp", "close", "split_ratio", "adj_close"])
 
 # %% [markdown]
+# ### Exkurs: Wie liest man `adj_close` an einem Split-Tag?
+#
+# Warum steht in der Tabelle oben bei einem Schlusskurs von 41,50 $ und einem
+# 2:1-Split ein `adj_close` von nur 1,22 $?
+#
+# **`adj_close` ist nicht „`close` nach diesem einen Split".** Es ist der Kurs,
+# zurückgerechnet auf die *heutige* Aktienbasis — also bereinigt um **alle Splits
+# *nach* diesem Tag** *und* um **alle Dividenden danach**.
+#
+# Der Split vom 16.06.1987 steckt bereits in den 41,50 $ drin: In der
+# Quandl-WIKI-Struktur ist `close` an einem Split-Tag schon der *Post-Split*-Kurs,
+# und `split_ratio = 2.0` markiert nur „ab heute gilt die neue Basis".
+# `adj_close` rechnet deshalb nur die *späteren* Splits heraus.
+#
+# **Rechnung für 1987-06-16** — Splits danach: 2 (2000) × 2 (2005) × 7 (2014) = **28**
+#
+# ```text
+# 41,50 / 28        = 1,4821   # nur Split-bereinigt
+# 1,4821 / 1,2145   = 1,2203   # zusätzlich Dividenden-bereinigt  ✓
+# ```
+#
+# Der Restfaktor 1,2145 ist der kumulierte Dividendenfaktor: Jede Ausschüttung
+# wird als reinvestiert behandelt, weshalb die historischen Kurse zusätzlich nach
+# unten skaliert werden.
+#
+# **Gegenprobe über alle vier Split-Zeilen:**
+#
+# | Datum | close | adj_close | close/adj | Splits danach | Rest = Div-Faktor |
+# | --- | ---: | ---: | ---: | ---: | ---: |
+# | 1987-06-16 | 41,50 | 1,2203 | 34,007 | 2·2·7 = 28 | **1,2145** |
+# | 2000-06-21 | 55,63 | 3,5746 | 15,563 | 2·7 = 14 | **1,1116** |
+# | 2005-02-28 | 44,86 | 5,7651 | 7,781 | 7 | **1,1116** |
+# | 2014-06-09 | 93,70 | 88,1934 | 1,0624 | 1 | **1,0624** |
+#
+# Das ist in sich konsistent und passt exakt zur Apple-Historie:
+#
+# - **2000 und 2005 haben denselben Dividendenfaktor (1,1116)** → dazwischen gab
+#   es keine Ausschüttung. Korrekt: Apple zahlte von 1996 bis 2012 keine Dividende.
+# - **1987 hat einen höheren Faktor (1,2145 statt 1,1116)** → die zusätzlichen
+#   ~9,3 % stammen aus den Dividenden von 1987 bis 1995.
+# - **2014 hat Split-Faktor 1**, die 6,2 % Differenz sind reine Dividenden
+#   2014–2018. Das bestätigt auch, dass der Datensatz **vor** dem 4:1-Split vom
+#   August 2020 endet (Quandl WIKI wurde im März 2018 eingestellt) — sonst müsste
+#   hier noch ein Faktor 4 auftauchen.
+#
+# **Warum das so gemacht wird:** Ohne Bereinigung sähe ein 2:1-Split wie ein
+# −50 %-Tagesverlust aus. Für Renditeberechnungen, Features und Backtests braucht
+# man deshalb `adj_close`; `close` ist nur der tatsächlich am Markt gehandelte
+# Nominalkurs des Tages.
+#
+# Ein praktischer Fallstrick: `adj_close` ändert sich **rückwirkend** bei jedem
+# neuen Split und jeder neuen Dividende. Gecachte Features müssen nach einer
+# Corporate Action neu berechnet werden — sonst entstehen inkonsistente
+# Zeitreihen bzw. stiller Look-ahead-Bias.
+
+# %% [markdown]
 # First ten of 54 cash dividends.
 
 # %%
@@ -139,6 +195,71 @@ raw_returns = np.diff(raw_close) / raw_close[:-1]
 adj_returns = np.diff(adj_close) / adj_close[:-1]
 raw_cumret = np.cumprod(1 + raw_returns)
 adj_cumret = np.cumprod(1 + adj_returns)
+
+# %% [markdown]
+# ### Exkurs: Was macht `np.cumprod(1 + returns)`?
+#
+# Die Zelle oben rechnet in zwei Schritten vom Kursniveau zum Wachstumspfad.
+#
+# **1. `raw_returns`** — einfache (arithmetische) Tagesrendite:
+#
+# $$r_t = \frac{P_t - P_{t-1}}{P_{t-1}} = \frac{P_t}{P_{t-1}} - 1$$
+#
+# `np.diff` liefert die Differenzen $P_t - P_{t-1}$, geteilt wird durch den
+# *Vortageskurs* `raw_close[:-1]`. Das Ergebnis hat **N−1** Elemente bei N Kursen.
+#
+# **2. `1 + raw_returns`** ist der **Wachstumsfaktor** (gross return)
+# $1 + r_t = P_t / P_{t-1}$ — also 1,02 für +2 %, 0,98 für −2 %.
+#
+# **3. `np.cumprod`** bildet das laufende Produkt dieser Faktoren:
+#
+# $$\text{cumret}_t = \prod_{i=1}^{t} (1 + r_i)$$
+#
+# Das ist der Wert von **1 $, das am ersten Tag investiert wurde**. Element 0 ist
+# $1+r_1$, nicht 1 — deshalb wird in der Plot-Zelle gegen `dates_arr[1:]`
+# gezeichnet, damit Datum und Wert zusammenpassen.
+#
+# **Warum `cumprod` und nicht `cumsum`?** Renditen verketten sich
+# *multiplikativ*. −50 % gefolgt von +50 % ergibt nicht 0, sondern
+# `0,5 × 1,5 = 0,75`, also −25 %. Nur bei **Log**-Renditen
+# `np.log(P_t / P_{t-1})` dürfte man addieren — dann wäre `cumsum` korrekt und
+# `np.exp()` am Ende nötig.
+#
+# **Teleskopprodukt.** Die Faktoren kürzen sich weg:
+#
+# $$\frac{P_1}{P_0}\cdot\frac{P_2}{P_1}\cdots\frac{P_t}{P_{t-1}} = \frac{P_t}{P_0}$$
+#
+# `raw_cumret` ist damit rechnerisch identisch zu `raw_close[1:] / raw_close[0]`:
+#
+# ```text
+# raw_cumret[-1] = 5,8553    = 168,34 / 28,75      (Rohkurse)
+# adj_cumret[-1] = 398,2438  = 168,34 / 0,4227     (bereinigt)
+# ```
+#
+# Der Umweg über Renditen ist trotzdem bewusst gewählt: Genau so arbeitet eine
+# Backtest- oder Feature-Pipeline (mit Renditereihen statt Kursniveaus) — und
+# genau dort schlägt der folgende Fehler zu.
+#
+# **Der eigentliche Punkt: `raw_cumret` ist falsch.** Deshalb ist die Kurve im
+# Plot als *"Raw prices (wrong)"* beschriftet. An jedem Split-Tag erzeugt der
+# unbereinigte Kurs eine **Phantom-Rendite** — beim 2:1-Split am 16.06.1987 sind
+# das −47,13 %. Wirtschaftlich hat niemand 47 % verloren, der Anleger hält danach
+# doppelt so viele Aktien. `cumprod` multipliziert diesen Faktor aber hinein, und
+# weil ein Produkt **alle folgenden Werte dauerhaft skaliert**, liegt der gesamte
+# Pfad ab 1987 zu tief. Über alle vier Splits:
+#
+# ```text
+# adj_cumret[-1] / raw_cumret[-1] = 68,01
+#                                 = 56 (Splits: 2·2·2·7) × 1,2145 (Dividendenfaktor)
+# ```
+#
+# Der Faktor 1,2145 ist derselbe Dividendenfaktor wie in der Exkurs-Tabelle zu
+# `adj_close` weiter oben — passend, denn Apple zahlte seine erste Dividende erst
+# 1987, davor gibt es nichts zu bereinigen.
+#
+# Aus Rohkursen gerechnet hätte AAPL von 1980 bis 2018 also „nur" das 5,9-Fache
+# gemacht statt des tatsächlichen 398-Fachen — ein Faktor 68 an reinem
+# Buchhaltungsartefakt.
 
 # %%
 fig, ax = plt.subplots(figsize=(12, 6), layout="tight")
