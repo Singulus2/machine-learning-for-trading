@@ -268,7 +268,7 @@ extension_products:
 individual:
   schema: "ohlcv-1h"
   stype_in: "raw_symbol"
-  output_dir: "futures/individual"
+  output_dir: "futures/market/individual"
 
   products:
     ES:
@@ -288,11 +288,12 @@ individual:
 # ============================================================================
 # After download, data is organized as:
 #
-# $ML4T_DATA_PATH/futures/
+# $ML4T_DATA_PATH/futures/market/
 # |-- continuous/                  # Hourly OHLCV, Hive partitioned
-# |   |-- product={PRODUCT}/
-# |       |-- year={YEAR}/
-# |           |-- data.parquet    # V0, V1, V2 stacked
+# |   |-- hourly/
+# |       |-- product={PRODUCT}/
+# |           |-- year={YEAR}/
+# |               |-- data.parquet    # V0, V1, V2 stacked
 # |
 # |-- individual/                  # For roll demonstration
 # |   |-- ES/
@@ -300,7 +301,7 @@ individual:
 # |   |-- CL/
 # |       |-- data.parquet
 # |
-# |-- definitions.parquet          # Contract specifications
+# |-- contract_definitions.parquet # Contract specifications (ES + CL, one shared file)
 # |
 # |-- _archive/                    # Deprecated daily data
 #     |-- continuous_daily.parquet

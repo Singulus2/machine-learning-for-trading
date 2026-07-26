@@ -119,7 +119,7 @@ def list_cme_products(frequency: str = "hourly") -> list[str]:
             raise DataNotFoundError(
                 dataset_name="CME Futures Individual Contracts",
                 path=root,
-                download_script="data/futures/market/download.py",
+                download_script="data/futures/market/databento_individual.py",
                 requires_api_key="DATABENTO_API_KEY",
             )
         return sorted(
@@ -256,7 +256,7 @@ def _load_cme_futures_hourly(
             raise DataNotFoundError(
                 dataset_name="CME Futures Individual Contracts",
                 path=individual_dir,
-                download_script="data/futures/market/download.py",
+                download_script="data/futures/market/databento_individual.py",
                 requires_api_key="DATABENTO_API_KEY",
             )
 
@@ -271,7 +271,7 @@ def _load_cme_futures_hourly(
             raise DataNotFoundError(
                 dataset_name="CME Futures Individual Contracts",
                 path=individual_dir,
-                download_script="data/futures/market/download.py",
+                download_script="data/futures/market/databento_individual.py",
                 requires_api_key="DATABENTO_API_KEY",
             )
 
@@ -291,7 +291,7 @@ def _load_cme_futures_hourly(
             raise DataNotFoundError(
                 dataset_name=f"CME Futures Individual Contracts ({', '.join(missing)})",
                 path=individual_dir / missing[0] / "data.parquet",
-                download_script="data/futures/market/download.py",
+                download_script="data/futures/market/databento_individual.py",
                 requires_api_key="DATABENTO_API_KEY",
             )
 
