@@ -741,6 +741,43 @@ validation_summary
 # | Statistical analysis | Ratio | Preserves percentage returns accurately |
 # | Live trading | Raw + position management | Handle rolls in execution layer |
 #
+# ### Exkurs: Was eine back-adjustierte Serie *nicht* enthält
+#
+# Roll-Regeln (Kalender, Volumen, Open Interest) und Continuity-Methoden (Ratio-
+# vs. Differenz-Adjustment) sind **backtest-definierende** Entscheidungen — und
+# das aus zwei getrennten Gründen.
+#
+# **1. Roll-Regeln legen fest, *wann* gerollt wird.** Kalenderbasiert (fester Tag
+# vor Verfall), volumenbasiert (sobald der nächste Kontrakt mehr Volumen zieht)
+# oder open-interest-basiert (analog über offene Positionen) — genau das
+# Kriterium, das `identify_front_month` oben mit dem No-Rollback-Constraint
+# umsetzt. Unterschiedliche Strategien brauchen unterschiedliche Roll-Logik: Eine
+# Trendfolge-Strategie reagiert anders auf einen frühen vs. späten Roll als eine
+# Carry-Strategie.
+#
+# **2. Continuity-Methoden legen fest, *wie* der Preissprung am Rolltag
+# geglättet wird** — das ist die Panama- vs. Ratio-Unterscheidung aus der
+# Tabelle oben.
+#
+# **Der wichtigere Punkt:** Back-adjustierte Serien — egal ob additiv oder
+# multiplikativ — bilden nur die **Kursbewegung des Futures** ab. Sie
+# verwenden typischerweise den **Futures-P&L**, enthalten aber **keinen
+# Collateral-Return** (Zinsertrag auf die Margin).
+#
+# Ein Future bindet nur eine Margin, keinen vollen Kaufpreis. Ein Investor legt
+# das übrige Kapital meist verzinst an (z. B. in T-Bills); dieser Zinsertrag
+# steckt in keiner der beiden Adjustment-Methoden. Deshalb verhält sich eine
+# back-adjustierte Futures-Serie faktisch wie ein **Excess-Return-Proxy**
+# (Rendite über der risikofreien Verzinsung) — nicht wie ein Total-Return.
+#
+# **Praktische Konsequenz:** Vergleicht man eine back-adjustierte Futures-Serie
+# mit einem Spot-Asset (physisches Gold) oder einem Total-Return-Index, unterschätzt
+# man die Futures-Position systematisch um den nicht modellierten Zinsertrag —
+# bei hohen Zinsen (z. B. 5 % p.a.) eine spürbare, kumulierende Lücke. Vor jedem
+# solchen Vergleich (etwa in Kapitel 8 oder 16) explizit machen: Wird nur der
+# Futures-P&L modelliert, der Collateral-Return, oder beides zusammen (≈ Total
+# Return)?
+#
 # ### Next Steps
 #
 # - **Chapter 8**: Carry and momentum features built on continuous series.
