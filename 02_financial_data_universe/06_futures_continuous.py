@@ -138,6 +138,48 @@ def parse_contract_symbol(symbol: str) -> dict:
     }
 
 
+# %% [markdown]
+# ### Exkurs: Was bedeutet `{**parse_contract_symbol(r["symbol"]), "symbol": r["symbol"]}`?
+#
+# Das ist ein **Dictionary-Merge per Unpacking** — `**dict` entpackt alle
+# Key-Value-Paare eines Dictionaries in ein neues Dictionary-Literal, ähnlich
+# wie `*liste` eine Liste in einzelne Argumente entpackt.
+#
+# **Schritt für Schritt:**
+#
+# 1. `parse_contract_symbol(r["symbol"])` liefert für ein Symbol wie `"ESH24"`
+#    dieses Dictionary zurück:
+#
+#    ```python
+#    {"product": "ES", "month_code": "H", "month": 3, "year": 2024}
+#    ```
+#
+# 2. `{**dict_von_oben, "symbol": r["symbol"]}` baut daraus ein **neues**
+#    Dictionary, das erst alle vier Einträge aus Schritt 1 übernimmt und dann
+#    zusätzlich `"symbol"` anhängt:
+#
+#    ```python
+#    {"product": "ES", "month_code": "H", "month": 3, "year": 2024, "symbol": "ESH24"}
+#    ```
+#
+#    Ergebnis: fünf Einträge statt vier.
+#
+# **Warum nicht einfach `parse_contract_symbol` erweitern?** Weil die Funktion
+# bewusst **nicht** das Symbol selbst zurückgibt — sie bekommt es ja bereits
+# als Eingabeparameter, das wäre redundant für die Funktion allein. Aber für
+# die Zeile hier wird das Symbol als **Join-Schlüssel** gebraucht: Direkt
+# danach steht `.join(contract_defs.select("symbol", "expiration"),
+# on="symbol")`. Ohne die `"symbol"`-Spalte im Dictionary könnte man später
+# nicht mit `contract_defs` joinen, um die `expiration`-Spalte wieder
+# anzuheften. Das Unpacking ist also der Klebstoff zwischen einer generischen
+# Parsing-Funktion und dem konkreten Bedarf dieser einen Stelle im Code.
+#
+# **Gesamtzusammenhang:** Die List Comprehension iteriert über jede Zeile aus
+# `contract_defs` (den echten Databento-Kontraktdefinitionen), parst deren
+# Symbol in seine Bestandteile und baut daraus eine Liste von Dictionaries —
+# die `pl.DataFrame([...])` anschließend in einen DataFrame verwandelt, um ihn
+# nach `year`/`month` zu sortieren.
+
 # %%
 defn_path = ML4T_DATA_PATH / "futures" / "market" / "contract_definitions.parquet"
 contract_defs = pl.read_parquet(defn_path).filter(pl.col("product") == "ES")

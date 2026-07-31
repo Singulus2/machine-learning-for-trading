@@ -56,6 +56,11 @@ from utils.downloading import (
 # ============================================================================
 
 
+# @dataclass generiert automatisch __init__, __repr__ und __eq__ aus den
+# unten annotierten Feldern (Feldreihenfolge = Parameterreihenfolge im
+# generierten Konstruktor). Die Typ-Annotationen (str, list[int], ...)
+# legen nur die erwarteten Felder/Typen fest, ohne die Klasse von Hand
+# mit __init__ etc. auszuschreiben.
 @dataclass
 class FuturesConfig:
     """Futures download configuration from YAML."""
@@ -67,6 +72,8 @@ class FuturesConfig:
     default_start: str
     default_end: str
     products: dict[str, dict[str, Any]]
+    # field(default_factory=dict) statt "= {}", da veränderliche Defaults
+    # (dict/list) sonst zwischen allen Instanzen geteilt würden.
     extension_products: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @classmethod
@@ -176,6 +183,12 @@ def get_year_coverage(
 
 # ============================================================================
 # Coverage Analysis
+#
+# Prueft vor jedem Download-Lauf, welche Jahre pro Produkt lokal bereits
+# vollstaendig vorliegen und welche fehlen/unvollstaendig sind. Ziel:
+# keine unnoetigen (kostenpflichtigen) Re-Downloads bereits vollstaendiger
+# Jahre, aber zuverlaessiges Nachladen von Luecken bzw. abgebrochenen
+# frueheren Laeufen. Fungiert damit als Idempotenz-/Delta-Pruefung.
 # ============================================================================
 
 
@@ -220,7 +233,8 @@ def analyze_product_coverage(
         min_date, max_date, rows = get_year_coverage(data_dir, product, year)
 
         if rows == 0:
-            # No data for this year
+            # Partition fehlt komplett (oder ist leer) -> Jahr gilt als
+            # fehlend und wandert in years_to_download.
             years[year] = YearStatus(
                 year=year,
                 exists=False,
@@ -346,10 +360,12 @@ def download_full_product(
     """
     import databento as db
 
+    # Zeitraum: Start aus der Produkt-Config, Ende aus config.default_end.
     start_date = config.get_product_start(product)
     end_date = config.default_end
 
     if dry_run:
+        # Kurzschluss: nur Meldung zurueckgeben, nichts tatsaechlich laden.
         return 0, f"[DRY RUN] Would download {product}: {start_date} to {end_date}"
 
     # Build symbols for continuous contracts
@@ -359,6 +375,8 @@ def download_full_product(
         client = db.Historical()
         print(f"    Downloading {product} ({start_date} to {end_date})...", flush=True)
 
+        # Ein einziger API-Aufruf fuer den gesamten Zeitraum statt
+        # Jahr-fuer-Jahr-Aufrufe -> deutlich weniger API-Overhead (~15x).
         data = client.timeseries.get_range(
             dataset=config.dataset,
             symbols=symbols,
@@ -372,6 +390,8 @@ def download_full_product(
         patch_databento_symbology()
         import tempfile
 
+        # Umweg ueber eine temporaere Parquet-Datei, um die Databento-
+        # Rueckgabe nach Polars zu ueberfuehren; Temp-Datei danach loeschen.
         with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as tmp:
             tmp_path = Path(tmp.name)
         data.to_parquet(tmp_path)
@@ -432,16 +452,34 @@ def download_full_product(
 
             # Merge with existing if present
             if output_path.exists():
+                # Bestehende Partition + neue Daten zusammenfuehren, nach
+                # (timestamp, tenor) deduplizieren (neuere Zeilen gewinnen)
+                # -> macht die Funktion idempotent/inkrementell aufrufbar.
                 existing = pl.read_parquet(output_path)
+                # Nur gemeinsame Spalten behalten: Absicherung gegen
+                # Schema-Drift (z.B. alte Datei hat andere Spalten als
+                # der aktuelle Download) - sonst wuerde pl.concat mit
+                # einem Spalten-Mismatch fehlschlagen.
                 common_cols = [c for c in year_data.columns if c in existing.columns]
                 year_data = year_data.select(common_cols)
                 existing = existing.select(common_cols)
+                # Alte + neue Zeilen untereinanderhaengen; kann an dieser
+                # Stelle noch Duplikate enthalten (z.B. bei --force oder
+                # erneutem Laden eines zuvor unvollstaendigen Jahres).
                 combined = pl.concat([existing, year_data])
+                # Duplikate ueber (timestamp, tenor) entfernen. keep="last"
+                # behaelt die zuletzt in combined stehende Zeile - da
+                # year_data hinter existing angehaengt wurde, gewinnen bei
+                # Konflikten die neu heruntergeladenen Werte. Danach nach
+                # (timestamp, tenor) sortiert fuer konsistente, sequentiell
+                # lesbare Parquet-Dateien.
                 combined = combined.unique(subset=["timestamp", "tenor"], keep="last").sort(
                     ["timestamp", "tenor"]
                 )
+                # Ueberschreibt die alte Partition mit der gemergten Version.
                 combined.write_parquet(output_path)
             else:
+                # Keine bestehende Partition -> einfach sortiert neu schreiben.
                 year_data.sort(["timestamp", "tenor"]).write_parquet(output_path)
 
             years_written += 1
@@ -452,6 +490,8 @@ def download_full_product(
         )
 
     except Exception as e:
+        # Fehler abfangen statt abzustuerzen, damit ein Produkt-Fehler
+        # nicht die Verarbeitung der restlichen Produkte stoppt.
         return 0, f"Error downloading {product}: {e}"
 
 
@@ -467,6 +507,10 @@ def download_product_efficient(
     Returns:
         dict with stats: downloaded, failed, rows, messages
     """
+    # Duenner Wrapper: uebersetzt das (rows, message)-Tupel von
+    # download_full_product() in ein einheitliches Statistik-Dict, das
+    # sich ueber mehrere Produkte hinweg aggregieren laesst (siehe
+    # download_parallel), ohne dass msg dort geparst werden muss.
     rows, msg = download_full_product(product, config, data_dir, dry_run=dry_run)
 
     stats = {"downloaded": 0, "failed": 0, "rows": 0, "messages": [msg]}
@@ -650,7 +694,11 @@ Examples:
     args = parser.parse_args()
 
     # Load configuration
+    # Nimm den per --config übergebenen Pfad, falls vorhanden; sonst den
+    # Default neben dem Skript (config.yaml, siehe get_config_path()).
     config_path = args.config or get_config_path()
+    # Frühzeitige Prüfung, damit ein fehlender Pfad hier klar gemeldet wird
+    # statt später als kryptischer Fehler beim YAML-Parsen.
     if not config_path.exists():
         print(f"ERROR: Config file not found: {config_path}")
         return 1

@@ -102,6 +102,35 @@ OUTPUT_DIR = (
 #
 # Both bars belong to Monday's session (which ends Monday 4 PM CT).
 
+# %% [markdown]
+# ### Exkurs: Was ist UTC als Zeitzone?
+#
+# **UTC** (Coordinated Universal Time) ist der weltweite Referenz-Zeitstandard,
+# von dem sich alle Zeitzonen als fester Offset ableiten (z. B. `UTC+1` für
+# Mitteleuropa im Winter, `UTC-5`/`UTC-6` für Chicago). Im Gegensatz zu lokalen
+# Zeitzonen wie `America/Chicago` kennt UTC **keine Sommerzeitumstellung** — es
+# läuft ganzjährig gleichmäßig durch.
+#
+# Genau deshalb sind die Rohdaten hier (Databento) in UTC gespeichert, nicht in
+# CT:
+#
+# - **Eindeutigkeit**: CME-Futures handeln in Chicago, aber Databento liefert
+#   die Daten global. Ohne festen Referenzpunkt wäre unklar, ob ein Timestamp
+#   Lokalzeit, Exchange-Zeit oder Serverzeit meint.
+# - **Keine Sommerzeit-Sprünge**: `America/Chicago` springt zweimal im Jahr um
+#   eine Stunde (CST ↔ CDT). Das würde bei Zeitreihenoperationen — Sortierung,
+#   Differenzen zwischen Timestamps, Session-Grenzen — zu Doppel- oder
+#   Lücken-Stunden führen. UTC ist dafür immun.
+# - **Session-Alignment ist trotzdem lokal nötig**: CME-Sessions enden um 16:00
+#   **CT**, nicht um Mitternacht UTC — deshalb konvertiert
+#   `assign_cme_session_date()` unten (`ts.astimezone(CT)`) jeden UTC-Timestamp
+#   gezielt nach Central Time, nur um die Session-Grenze zu bestimmen. Der
+#   zugrunde liegende UTC-Wert selbst bleibt dabei unverändert; `astimezone`
+#   ändert nur die *Anzeige*/Interpretation, nicht den absoluten Zeitpunkt.
+#
+# Das ist der Standard-Pattern in diesem Projekt: intern/gespeichert immer UTC,
+# nur für Session-/Anzeige-Logik lokal umrechnen.
+
 # %%
 # Timezone constants
 CT = ZoneInfo("America/Chicago")
@@ -186,6 +215,120 @@ hourly.filter(pl.col("product") == "ES").select(
 # ## 3. Assign Session Dates
 #
 # We add a `session_date` column using Polars expressions for efficiency.
+
+# %% [markdown]
+# ### Exkurs: Wie funktioniert `add_session_date()`?
+#
+# Das ist die **vektorisierte Polars-Version** von `assign_cme_session_date()`
+# weiter oben — statt einen einzelnen `datetime` zu verarbeiten, hängt sie eine
+# `session_date`-Spalte an einen ganzen DataFrame, ohne eine Python-Schleife
+# über Millionen Zeilen zu laufen.
+#
+# **1. UTC → Central Time konvertieren**
+#
+# ```python
+# df.with_columns(pl.col("timestamp").dt.convert_time_zone("America/Chicago").alias("ts_ct"))
+# ```
+#
+# Wie im UTC-Exkurs oben erklärt: `timestamp` bleibt UTC-basiert, `convert_time_zone`
+# erzeugt nur eine zusätzliche Spalte mit der lokalen CT-Ansicht desselben
+# Zeitpunkts (inkl. automatischer CST/CDT-Sommerzeit-Berücksichtigung, da
+# `America/Chicago` eine echte IANA-Zeitzone ist, kein fixer Offset).
+#
+# **2. Drei Hilfsspalten ableiten**
+#
+# ```python
+# pl.col("ts_ct").dt.date().alias("_ct_date"),                              # Kalenderdatum in CT
+# (pl.col("ts_ct").dt.hour() >= SESSION_END_HOUR_CT).alias("_after_close"),  # nach 16 Uhr CT?
+# (pl.col("ts_ct").dt.weekday() == 5).alias("_is_friday"),                   # Freitag?
+# ```
+#
+# `SESSION_END_HOUR_CT = 16` ist oben als Konstante definiert. `dt.weekday()`
+# liefert in Polars 1=Montag...7=Sonntag, also `== 5` für Freitag.
+#
+# **3. Die eigentliche Regel anwenden**
+#
+# ```python
+# pl.when(pl.col("_after_close") & ~pl.col("_is_friday"))
+# .then(pl.col("_ct_date") + pl.duration(days=1))
+# .otherwise(pl.col("_ct_date"))
+# .alias("session_date")
+# ```
+#
+# In Worten: *Ist die Bar nach 16 Uhr CT UND kein Freitag → gehört sie zum
+# nächsten Kalendertag. Sonst (vor 16 Uhr, oder Freitag nach 16 Uhr) → bleibt
+# sie beim aktuellen Datum.*
+#
+# Der Freitags-Sonderfall ist der Grund für die Ausnahme: Ohne sie würde eine
+# Bar von Freitag 17 Uhr CT auf „Samstag" rollen — aber CME hat **keine
+# Samstags-Session** (Handel schließt Freitag 16 Uhr, öffnet erst wieder
+# Sonntag 17 Uhr). Die letzte Handelsstunde vor dem Wochenende muss deshalb bei
+# Freitag bleiben, nicht auf einen nicht-existenten Handelstag rutschen — genau
+# das validiert weiter oben `test_times[3]` (Kommentar „NOT Saturday").
+#
+# **4. Aufräumen**
+#
+# ```python
+# .drop("ts_ct", "_ct_date", "_after_close", "_is_friday")
+# ```
+#
+# Die Hilfsspalten (Unterstrich-Präfix als Konvention für „intern/temporär")
+# werden entfernt — übrig bleibt nur die neue `session_date`-Spalte neben den
+# ursprünglichen.
+#
+# **Warum diese Version statt der Skalar-Funktion:** `assign_cme_session_date()`
+# nimmt ein einzelnes `datetime`-Objekt und läuft in Python — für Millionen
+# Zeilen wäre `.map_elements()` damit langsam. Diese Version drückt dieselbe
+# Regel komplett in Polars-Ausdrücken aus (`pl.when/.then/.otherwise`), läuft
+# also spaltenweise in Rust statt zeilenweise in Python — der übliche
+# Performance-Unterschied zwischen `map_elements` und nativen Expressions in
+# Polars.
+
+# %% [markdown]
+# ### Exkurs: Was macht `with_columns`?
+#
+# `with_columns()` ist der zentrale Polars-Ausdruck, um einem DataFrame **neue
+# Spalten hinzuzufügen oder bestehende zu ersetzen**, ohne den Rest der Tabelle
+# anzufassen — genau das Werkzeug, das `add_session_date()` unten dreimal
+# hintereinander nutzt.
+#
+# **Grundprinzip:**
+#
+# ```python
+# df.with_columns(
+#     (pl.col("a") + pl.col("b")).alias("c")
+# )
+# ```
+#
+# Das gibt einen **neuen** DataFrame zurück (Polars ist immutable) mit allen
+# ursprünglichen Spalten **plus** der neuen Spalte `c`. Heißt eine übergebene
+# Spalte wie eine bestehende, wird die bestehende überschrieben — sonst bleibt
+# alles unverändert erhalten. Das unterscheidet `with_columns` von `select()`,
+# das nur die explizit genannten Spalten behält und alles andere wegwirft.
+#
+# **Warum `add_session_date()` es dreimal verkettet:**
+#
+# ```python
+# df.with_columns(...)   # 1: ts_ct anhängen
+#   .with_columns(...)   # 2: _ct_date, _after_close, _is_friday anhängen
+#   .with_columns(...)   # 3: session_date anhängen
+#   .drop(...)            # Hilfsspalten wieder entfernen
+# ```
+#
+# Jeder Schritt baut auf dem Ergebnis des vorherigen auf — Schritt 2 braucht
+# `ts_ct` aus Schritt 1, Schritt 3 braucht `_ct_date`/`_after_close`/`_is_friday`
+# aus Schritt 2. Man **könnte** das in einen einzigen `with_columns`-Aufruf
+# packen, aber innerhalb *eines* `with_columns`-Blocks können sich die
+# Ausdrücke nicht gegenseitig referenzieren (alle Ausdrücke in einem Block
+# werden auf demselben Eingabe-Stand berechnet). Die Verkettung mehrerer
+# `with_columns`-Aufrufe ist deshalb der Standardweg für mehrstufige
+# Herleitungen wie diese.
+#
+# **Mehrere Spalten auf einmal:** Wie in Schritt 2 zu sehen, akzeptiert
+# `with_columns()` beliebig viele durch Komma getrennte Ausdrücke und fügt sie
+# alle in einem Rutsch hinzu — effizienter als drei separate
+# `with_columns`-Aufrufe, weil Polars sie gemeinsam in einem Durchlauf über die
+# Daten auswerten kann.
 
 # %%
 # Vectorized session date assignment using Polars
@@ -301,6 +444,46 @@ fig.show()
 # push prices negative for commodities with large cumulative adjustments.
 #
 # See [`06_futures_continuous`](06_futures_continuous.ipynb) for a teaching explanation of adjustment methods.
+
+# %% [markdown]
+# ### Exkurs: Was versteht man unter Ratio Back-Adjustment?
+#
+# **Ratio (multiplikative) Back-Adjustment** baut aus mehreren aneinandergereihten
+# Futures-Kontrakten eine glatte, kontinuierliche Preisreihe — indem am Rolltag
+# entstehende Preissprünge durch **Multiplikation mit einem Skalierungsfaktor**
+# eliminiert werden, statt durch Addition (das wäre die Panama-Methode).
+#
+# **Das Kernproblem:** Am Rolltag wechselt man vom auslaufenden Kontrakt zum
+# nächsten — die beiden notieren aber meist zu unterschiedlichen Preisen
+# (Contango/Backwardation). Ohne Anpassung sähe das im Chart wie ein
+# künstlicher Kurssprung aus, der keine echte Marktbewegung ist.
+#
+# **So setzt der Code das um:**
+#
+# 1. **Ratio am Rolltag berechnen** (`roll_ratios` unten): neuer Kontrakt-Open
+#    geteilt durch alten Kontrakt-Close (`open / _prev_close`) — dieses
+#    Verhältnis beschreibt exakt den Preissprung am Rollpunkt.
+# 2. **Rückwärts kumulieren** (`ratio_adjust()` weiter unten): Die Schleife
+#    läuft rückwärts durch die Zeit. Der jüngste Preis bleibt unangetastet
+#    (Faktor 1,0), und je weiter man in die Vergangenheit geht, desto mehr
+#    Rollfaktoren werden aufmultipliziert — das Ergebnis ist `_cumulative_ratio`.
+# 3. **Alle historischen Preise skalieren**: `adj_close = close *
+#    _cumulative_ratio` — nicht *addiert*, sondern **multipliziert**, das ist
+#    der namensgebende Unterschied zur Panama-Methode.
+#
+# **Warum multiplikativ statt additiv?** Multiplikation erhält **prozentuale
+# Renditen** korrekt über die gesamte Historie hinweg — dieselbe Logik wie beim
+# `raw_cumret`/`adj_cumret`-Vergleich in `02_corporate_actions.py`: Genau wie
+# dort Aktiensplits die Rendite-Kette verfälschen, verfälschen hier
+# Futures-Rolls sie, wenn man ihnen nicht mit einem multiplikativen Faktor
+# begegnet. Additive Anpassung (Panama) verzerrt dagegen Prozent-Renditen vor
+# allem bei alten, tief liegenden Preisen — dafür erhält sie exakte
+# Dollar-P&L-Beträge, was für Backtesting oft wichtiger ist.
+#
+# **Reconciliation:** Der kumulative Faktor wird nicht verworfen, sondern als
+# eigene Spalte (`cum_ratio`) mitgeführt — so lässt sich jederzeit zwischen roh
+# und adjustiert hin- und herrechnen: `adj_close == raw_close * cum_ratio`,
+# ohne Informationsverlust.
 
 # %%
 # Sort and detect roll transitions per (product, tenor)
